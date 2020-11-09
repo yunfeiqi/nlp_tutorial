@@ -18,6 +18,10 @@ import torch.utils.data as Data
 
 from dataset import TrainDataSet
 
+
+vocab_size = 10, d_model = 20, d_q = 10, d_k = 10, d_v = 10, d_fnn = 50, n_head = 8, n_layer = 6
+
+
 # S: Symbol that shows starting of decoding input
 # E: Symbol that shows starting of decoding output
 # P: Symbol that will fill in blank sequence if current batch data size is short than time steps
@@ -59,11 +63,11 @@ def make_data(sentences):
 
 enc_inputs, dec_inputs, dec_outputs = make_data(sentences)
 
-
 loader = Data.DataLoader(
     TrainDataSet(enc_inputs, dec_inputs, dec_outputs), 2, True)
 
-model = Transformer().cuda()
+model = Transformer(vocab_size, d_model, d_q, d_k,
+                    d_v, d_fnn, n_head, n_layer).cuda()
 criterion = nn.CrossEntropyLoss(ignore_index=0)
 optimizer = optim.SGD(model.parameters, lr=1e-3, momentum=0.8)
 
