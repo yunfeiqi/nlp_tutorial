@@ -94,7 +94,7 @@ loader = Data.DataLoader(
 model = Transformer(vocab_size, d_model, d_q, d_k,
                     d_v, d_fnn, n_head, n_layer).cuda()
 criterion = nn.CrossEntropyLoss(ignore_index=0)
-optimizer = optim.SGD(model.parameters, lr=1e-3, momentum=0.8)
+optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.8)
 
 for epoch in range(30):
     for enc_inputs, dec_inputs, dec_outpus in loader:
