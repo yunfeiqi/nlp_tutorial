@@ -18,7 +18,7 @@ class TrainDataSet(Data.Dataset):
         self.dec_output = dec_output
 
     def __len__(self):
-        return self.enc_input.shape()[0]
+        return self.enc_input.shape[0]
 
     def __getitem__(self, index):
         return self.enc_input[index], self.dec_input[index], self.dec_output[index]
