@@ -19,7 +19,14 @@ import torch.utils.data as Data
 from dataset import TrainDataSet
 
 
-vocab_size = 10, d_model = 20, d_q = 10, d_k = 10, d_v = 10, d_fnn = 50, n_head = 8, n_layer = 6
+vocab_size = 10
+d_model = 20
+d_q = 10
+d_k = 10
+d_v = 10
+d_fnn = 50
+n_head = 8
+n_layer = 6
 
 
 # S: Symbol that shows starting of decoding input
