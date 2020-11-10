@@ -10,7 +10,6 @@ from torch import optim
 from transformer import Transformer
 import torch.nn as nn
 import torch.optim as optim
-import math
 import torch
 import numpy as np
 import torch.nn as nn
@@ -27,6 +26,9 @@ d_v = 10
 d_fnn = 50
 n_head = 8
 n_layer = 6
+
+
+device = torch.device(0) if torch.cuda.is_available() else torch.device("cpu")
 
 
 # S: Symbol that shows starting of decoding input
@@ -68,44 +70,28 @@ def make_data(sentences):
     return torch.LongTensor(enc_inputs), torch.LongTensor(dec_inputs), torch.LongTensor(dec_outputs)
 
 
-def get_attn_pad_mask(seq_q, seq_k):
-    batch_size, len_q = seq_q.size()
-    batch_size, len_k = seq_k.size()
-    pad_attn_mask = seq_k.data.eq(0).unsqueeze(1)
-    return pad_attn_mask.expand(batch_size, len_q, len_k)
-
-
-def get_attn_subsequence_mask(seq):
-    '''
-    seq: [batch_size, tgt_len]
-    '''
-    attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
-    # Upper triangular matrix
-    subsequence_mask = np.triu(np.ones(attn_shape), k=1)
-    subsequence_mask = torch.from_numpy(subsequence_mask).byte()
-    return subsequence_mask  # [batch_size, tgt_len, tgt_len]
-
-
 enc_inputs, dec_inputs, dec_outputs = make_data(sentences)
 
 loader = Data.DataLoader(
     TrainDataSet(enc_inputs, dec_inputs, dec_outputs), 2, True)
 
 model = Transformer(vocab_size, d_model, d_q, d_k,
-                    d_v, d_fnn, n_head, n_layer).cuda()
+                    d_v, d_fnn, n_head, n_layer).to(device)
 criterion = nn.CrossEntropyLoss(ignore_index=0)
 optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.8)
 
-for epoch in range(30):
+for epoch in range(100):
     for enc_inputs, dec_inputs, dec_outpus in loader:
         # enc_inputs : [batch_size,src_len]
         # dec_inputs : [batch_size,tgt_len]
         # dec_outpus : [batch_size,tgt_len]
-        enc_inputs, dec_inputs, dec_outputs = enc_inputs.cuda(
-        ), dec_inputs.cuda(), dec_outpus.cuda()
+        enc_inputs, dec_inputs, dec_outputs = enc_inputs.to(
+            device), dec_inputs.to(device), dec_outpus.to(device)
 
-        outputs, enc_self_attns, dec_self_attns, dec_enc_attns = model(
-            enc_inputs, dec_inputs)
+        #[batch * seq * vocab]
+        outputs = model(enc_inputs, dec_inputs)
+        # [N * Vocab]
+        outputs = outputs.view(-1, outputs.size()[-1])
         loss = criterion(outputs, dec_outpus.view(-1))
 
         print('Epoch:', '%04d' % (epoch + 1), 'loss =', '{:.6f}'.format(loss))

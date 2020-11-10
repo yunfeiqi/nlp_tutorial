@@ -10,6 +10,7 @@
 import math
 import torch
 import torch.nn as nn
+import numpy as np
 
 
 class PositionEncoding(nn.Module):
@@ -38,8 +39,10 @@ class PositionEncoding(nn.Module):
         '''
         data: [ batch * seq * d_model]
         '''
-        seq_len = data.size()[1]
-        return self.dropout(data + self.pe[:seq_len, :])
+        data = data.transpose(0, 1)
+        seq_len = data.size()[0]
+        output = self.dropout(data + self.pe[:seq_len, :])
+        return output.transpose(0, 1)
 
 
 class ScaledDotProductAttention(nn.Module):
@@ -54,8 +57,6 @@ class ScaledDotProductAttention(nn.Module):
         attn_v : [batch * head * seq * d_v]
         attn_mask: [batch * head * seq * seq]
         '''
-
-        attn_q = torch.Tensor()
 
         # [batch * head *  seq * seq]
         weight = attn_q.matmul(attn_k.transpose(-1, -2))
@@ -102,7 +103,11 @@ class MultiHeadAttention(nn.Module):
         # Transformer atten_mask to [batch * head * seq * seq]
         attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_head, 1, 1)
 
+        # [ batch * n_head * seq * d_v ]
         attn = ScaledDotProductAttention(self.d_k)(Q, K, V, attn_mask)
+
+        # # [ batch * seq * d_v_n_head ]
+        attn = attn.transpose(1, 2).reshape(batch, -1, self.n_head * self.d_v)
 
         # [batch * seq * d_model]
         attn_output = self.fn(attn)
@@ -116,7 +121,7 @@ class ForwardNet(nn.Module):
         self.fnn2 = nn.Linear(d_fnn, d_model)
         self.l_normal = nn.LayerNorm(d_model)
 
-    def foward(self, data):
+    def forward(self, data):
         '''
         data :[ batch * seql * d_model]
         '''
@@ -179,7 +184,7 @@ class DecoderLayer(nn.Module):
             d_model=d_model, n_head=n_head, d_q=d_q, d_k=d_k, d_v=d_v)
         self.fnn = ForwardNet(d_model, d_fnn)
 
-    def forward(self, dec_input, enc_output, dec_mask, enc_mask):
+    def forward(self, dec_input, enc_output, dec_mask, dec_enc_mask):
         '''
         dec_input : [batch * dec_seq * d_model]
         enc_output: [batch * end_seq * d_model]
@@ -191,7 +196,7 @@ class DecoderLayer(nn.Module):
         dec_output = self.src_multi_attention(
             dec_input, dec_input, dec_input, dec_mask)
         attn_output = self.src_multi_attention(
-            enc_output, enc_output, dec_output, dec_mask)
+            dec_output, enc_output, enc_output, dec_enc_mask)
 
         output = self.fnn(attn_output)
         return output
@@ -206,16 +211,13 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList([DecoderLayer(d_model=d_model, d_q=d_q, d_k=d_k,
                                                   d_v=d_v, d_fnn=d_fnn, n_head=n_head) for _ in range(n_layer)])
 
-        self.fn = nn.Linear(d_model, vocab_size)
-
-    def forward(self, data, attn_mask):
-        emb = self.emb(data)
+    def forward(self, dec_input, enc_output, dec_mask, dec_enc_mask):
+        emb = self.emb(dec_input)
         output = self.pe(emb)
         for model in self.layers:
-            output = model(output, attn_mask)
+            output = model(output, enc_output, dec_mask, dec_enc_mask)
 
-        result = nn.Softmax(dim=-1)(self.fn(output))
-        return result
+        return output
 
 
 class Transformer(nn.Module):
@@ -226,14 +228,63 @@ class Transformer(nn.Module):
         self.decoder = Decoder(vocab_size, d_model, d_q,
                                d_k, d_v, d_fnn, n_head, n_layer)
 
-    def forward(self, enc_input, dec_input, enc_mask, dec_mask):
+        self.projection = nn.Linear(d_model, vocab_size)
+
+    def forward(self, enc_input, dec_input):
         '''
         enc_input ： [batch * enc_seq]
         dec_input ： [batch * dec_seq]
         enc_mask:[batch * enc_seq * enc_seq]
         dec_mask:[batch * dec_seq * dec_seq]
+
+        output:  [batch * dec_seq * vocab]
         '''
 
+        # mask for input
+        enc_mask = self.get_attn_pad_mask(enc_input, enc_input)
+
+        # pad mask for decoder
+        dec_src_mask = self.get_attn_pad_mask(dec_input, dec_input)
+        # subsqequence mask for decoder
+        dec_sub_mask = self.get_attn_subsequence_mask(dec_input)
+        # decoder mask
+        dec_mask = torch.gt(dec_src_mask + dec_sub_mask, 0)
+        # decoder - encoder attention mask
+        dec_enc_attn_mask = self.get_attn_pad_mask(dec_input, enc_input)
+
         enc_output = self.encoder(enc_input, enc_mask)
-        dec_output = self.decoder(dec_input, enc_output, enc_mask, dec_mask)
-        return dec_output
+
+        # [batch * seq * d_model]
+        dec_output = self.decoder(
+            dec_input, enc_output, dec_mask, dec_enc_attn_mask)
+
+        # [batch * seq * vocab]
+        dec_logist = self.projection(dec_output)
+
+        return dec_logist
+
+    def get_attn_pad_mask(self, seq_q, seq_k):
+        '''
+        seq_q: [batch * seq_q]
+        seq_k: [batch * seq_k]
+
+        Atten_Q: [batch * seq_q * dim]
+        Atten_K: [batch * seq_k * dim]
+        Attn: [ batch * seq_q * seq_k]
+        '''
+
+        batch_size, len_q = seq_q.size()
+        batch_size, len_k = seq_k.size()
+        #[ batch * 1 * seq_k ]
+        pad_attn_mask = seq_k.data.eq(0).unsqueeze(1)
+        return pad_attn_mask.expand(batch_size, len_q, len_k)
+
+    def get_attn_subsequence_mask(self, seq):
+        '''
+        seq: [batch_size, tgt_len]
+        '''
+        attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
+        # Upper triangular matrix
+        subsequence_mask = np.triu(np.ones(attn_shape), k=1)
+        subsequence_mask = torch.from_numpy(subsequence_mask).byte()
+        return subsequence_mask  # [batch_size, tgt_len, tgt_len]
