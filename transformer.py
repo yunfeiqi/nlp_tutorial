@@ -8,9 +8,41 @@
 '''
 
 import math
+from numpy.core.numeric import base_repr
 import torch
 import torch.nn as nn
 import numpy as np
+
+
+class Base(nn.Module):
+    def __init__(self) -> None:
+        super(Base, self).__init__()
+
+    def get_attn_pad_mask(self, seq_q, seq_k):
+        '''
+        seq_q: [batch * seq_q]
+        seq_k: [batch * seq_k]
+
+        Atten_Q: [batch * seq_q * dim]
+        Atten_K: [batch * seq_k * dim]
+        Attn: [ batch * seq_q * seq_k]
+        '''
+
+        batch_size, len_q = seq_q.size()
+        batch_size, len_k = seq_k.size()
+        #[ batch * 1 * seq_k ]
+        pad_attn_mask = seq_k.data.eq(0).unsqueeze(1)
+        return pad_attn_mask.expand(batch_size, len_q, len_k)
+
+    def get_attn_subsequence_mask(self, seq):
+        '''
+        seq: [batch_size, tgt_len]
+        '''
+        attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
+        # Upper triangular matrix
+        subsequence_mask = np.triu(np.ones(attn_shape), k=1)
+        subsequence_mask = torch.from_numpy(subsequence_mask).byte()
+        return subsequence_mask  # [batch_size, tgt_len, tgt_len]
 
 
 class PositionEncoding(nn.Module):
@@ -150,7 +182,7 @@ class EncoderLayer(nn.Module):
         return output
 
 
-class Encoder(nn.Module):
+class Encoder(Base):
     def __init__(self, vocab_size, d_model, d_q, d_k, d_v, d_fnn,  n_layer, n_head) -> None:
         super(Encoder, self).__init__()
         self.emb = nn.Embedding(vocab_size, d_model)
@@ -158,11 +190,14 @@ class Encoder(nn.Module):
         self.encoders = nn.ModuleList([EncoderLayer(d_model=d_model, n_head=n_head, d_q=d_q, d_k=d_k, d_v=d_v, d_fnn=d_fnn
                                                     ) for _ in range(n_layer)])
 
-    def forward(self, data, attn_mask):
+    def forward(self, data):
         '''
         data： [batch * seq]
-        attn_mask: [batch * seq * seq]
         '''
+
+        # mask for input
+        # [batch * seq * seq]
+        attn_mask = self.get_attn_pad_mask(data, data)
 
         # [batch * seq * d_model]
         output_emb = self.emb(data)
@@ -202,7 +237,7 @@ class DecoderLayer(nn.Module):
         return output
 
 
-class Decoder(nn.Module):
+class Decoder(Base):
     def __init__(self, vocab_size, d_model, d_q, d_k, d_v, d_fnn, n_head, n_layer) -> None:
         super(Decoder, self).__init__()
 
@@ -211,16 +246,31 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList([DecoderLayer(d_model=d_model, d_q=d_q, d_k=d_k,
                                                   d_v=d_v, d_fnn=d_fnn, n_head=n_head) for _ in range(n_layer)])
 
-    def forward(self, dec_input, enc_output, dec_mask, dec_enc_mask):
+    def forward(self, dec_input, enc_input, enc_output):
+        '''
+        dec_input : [ batch * seq]
+        enc_input : [ batch * seq_enc]
+        enc_output : [ batch * seql * d_model]
+        '''
+
+        # pad mask for decoder
+        dec_src_mask = self.get_attn_pad_mask(dec_input, dec_input)
+        # subsqequence mask for decoder
+        dec_sub_mask = self.get_attn_subsequence_mask(dec_input)
+        # decoder mask
+        dec_mask = torch.gt(dec_src_mask + dec_sub_mask, 0)
+        # decoder - encoder attention mask
+        dec_enc_attn_mask = self.get_attn_pad_mask(dec_input, enc_input)
+
         emb = self.emb(dec_input)
         output = self.pe(emb)
         for model in self.layers:
-            output = model(output, enc_output, dec_mask, dec_enc_mask)
+            output = model(output, enc_output, dec_mask, dec_enc_attn_mask)
 
         return output
 
 
-class Transformer(nn.Module):
+class Transformer(Base):
     def __init__(self, vocab_size, d_model, d_q, d_k, d_v, d_fnn,  n_layer, n_head) -> None:
         super(Transformer, self).__init__()
         self.encoder = Encoder(vocab_size, d_model, d_q,
@@ -240,51 +290,12 @@ class Transformer(nn.Module):
         output:  [batch * dec_seq * vocab]
         '''
 
-        # mask for input
-        enc_mask = self.get_attn_pad_mask(enc_input, enc_input)
-
-        # pad mask for decoder
-        dec_src_mask = self.get_attn_pad_mask(dec_input, dec_input)
-        # subsqequence mask for decoder
-        dec_sub_mask = self.get_attn_subsequence_mask(dec_input)
-        # decoder mask
-        dec_mask = torch.gt(dec_src_mask + dec_sub_mask, 0)
-        # decoder - encoder attention mask
-        dec_enc_attn_mask = self.get_attn_pad_mask(dec_input, enc_input)
-
-        enc_output = self.encoder(enc_input, enc_mask)
+        enc_output = self.encoder(enc_input)
 
         # [batch * seq * d_model]
-        dec_output = self.decoder(
-            dec_input, enc_output, dec_mask, dec_enc_attn_mask)
+        dec_output = self.decoder(dec_input, enc_input, enc_output)
 
         # [batch * seq * vocab]
         dec_logist = self.projection(dec_output)
 
         return dec_logist
-
-    def get_attn_pad_mask(self, seq_q, seq_k):
-        '''
-        seq_q: [batch * seq_q]
-        seq_k: [batch * seq_k]
-
-        Atten_Q: [batch * seq_q * dim]
-        Atten_K: [batch * seq_k * dim]
-        Attn: [ batch * seq_q * seq_k]
-        '''
-
-        batch_size, len_q = seq_q.size()
-        batch_size, len_k = seq_k.size()
-        #[ batch * 1 * seq_k ]
-        pad_attn_mask = seq_k.data.eq(0).unsqueeze(1)
-        return pad_attn_mask.expand(batch_size, len_q, len_k)
-
-    def get_attn_subsequence_mask(self, seq):
-        '''
-        seq: [batch_size, tgt_len]
-        '''
-        attn_shape = [seq.size(0), seq.size(1), seq.size(1)]
-        # Upper triangular matrix
-        subsequence_mask = np.triu(np.ones(attn_shape), k=1)
-        subsequence_mask = torch.from_numpy(subsequence_mask).byte()
-        return subsequence_mask  # [batch_size, tgt_len, tgt_len]
