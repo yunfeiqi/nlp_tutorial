@@ -66,7 +66,6 @@ def make_data(sentences):
         enc_inputs.extend(enc_input)
         dec_inputs.extend(dec_input)
         dec_outputs.extend(dec_output)
-
     return torch.LongTensor(enc_inputs), torch.LongTensor(dec_inputs), torch.LongTensor(dec_outputs)
 
 
@@ -74,6 +73,7 @@ enc_inputs, dec_inputs, dec_outputs = make_data(sentences)
 
 loader = Data.DataLoader(
     TrainDataSet(enc_inputs, dec_inputs, dec_outputs), 2, True)
+
 
 model = Transformer(vocab_size, d_model, d_q, d_k,
                     d_v, d_fnn, n_head, n_layer).to(device)
